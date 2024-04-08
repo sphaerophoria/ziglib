@@ -5,6 +5,7 @@ pkgs.mkShell {
     zls
     zig
     gdb
+    zlib
     # For linter script on push hook
     python3
   ];

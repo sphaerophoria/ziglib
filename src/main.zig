@@ -1,8 +1,10 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const huffman = @import("huffman.zig");
 const bit_writer = @import("bit_writer.zig");
 const huffman_writer = @import("huffman_writer.zig");
 const huffman_reader = @import("huffman_reader.zig");
+const z = @import("zlib.zig");
 
 pub fn compressString(alloc: std.mem.Allocator, input_data: []const u8, table: *const huffman.HuffmanTable) !std.ArrayList(u8) {
     var codebook: huffman.Codebook = undefined;
@@ -118,13 +120,17 @@ const Args = struct {
     }
 };
 
-pub fn main() !void {
-    var args = try Args.parse();
+fn testZlibCompression(args: *const Args) !void {
+    var zlib_compression_buf: [4096]u8 = undefined;
+    var compressed_size = try z.compressWithZlib(args.input_data, &zlib_compression_buf);
+    std.debug.print("zlib compressed: {}\n", .{HexSliceFormatter.init(zlib_compression_buf[0..compressed_size])});
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    var alloc = gpa.allocator();
+    var zlib_decompression_buf: [4096]u8 = undefined;
+    var decompressed_size = try z.decompressWithZlib(zlib_compression_buf[0..compressed_size], &zlib_decompression_buf);
+    std.debug.print("zlib decompressed: {s}\n", .{zlib_decompression_buf[0..decompressed_size]});
+}
 
+fn testHuffmanCompression(alloc: Allocator, args: *const Args) !void {
     var table = try huffman.HuffmanTable.init(alloc, args.input_data);
     defer table.deinit();
 
@@ -139,6 +145,21 @@ pub fn main() !void {
     defer decompressed.deinit();
 
     std.debug.print("decompressed: {s}\n", .{decompressed.items});
+}
+
+pub fn main() !void {
+    var args = try Args.parse();
+    std.debug.print("Input data: {s}\n", .{args.input_data});
+
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    var alloc = gpa.allocator();
+
+    std.debug.print("#### Huffman ####\n", .{});
+    try testHuffmanCompression(alloc, &args);
+
+    std.debug.print("\n#### Zlib ####\n", .{});
+    try testZlibCompression(&args);
 }
 
 test {
