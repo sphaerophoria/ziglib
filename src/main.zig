@@ -148,16 +148,21 @@ fn testHuffmanCompression(alloc: Allocator, args: *const Args) !void {
 }
 
 pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer {
+        if (gpa.deinit() != .ok) {
+            // For linting, if we have leaks we should indicate to our caller that we're broken
+            std.process.exit(1);
+        }
+    }
+
+    var alloc = gpa.allocator();
+
     var args = try Args.parse();
     std.debug.print("Input data: {s}\n", .{args.input_data});
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    var alloc = gpa.allocator();
-
     std.debug.print("#### Huffman ####\n", .{});
     try testHuffmanCompression(alloc, &args);
-
     std.debug.print("\n#### Zlib ####\n", .{});
     try testZlibCompression(&args);
 }
