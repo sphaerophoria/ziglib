@@ -71,3 +71,14 @@ pub fn decompressWithZlib(input_data: []const u8, output_buf: []u8) !usize {
 
     return z_stream.total_out;
 }
+
+test "zlib back and forth" {
+    const test_string = "the quick brown fox jumped over the lazy dog";
+    var compressed_buf = [_]u8{0} ** 256;
+    var compressed_len = try compressWithZlib(test_string, &compressed_buf);
+
+    var decompressed_buf = [_]u8{0} ** test_string.len;
+    var decompressed_len = try decompressWithZlib(compressed_buf[0..compressed_len], &decompressed_buf);
+
+    try std.testing.expectEqualStrings(test_string, decompressed_buf[0..decompressed_len]);
+}
