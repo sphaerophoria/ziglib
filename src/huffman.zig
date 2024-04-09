@@ -1,4 +1,5 @@
 const std = @import("std");
+const bit_writer = @import("bit_writer.zig");
 
 pub const Code = struct {
     // FIXME: Code might not fit in in u8
@@ -173,10 +174,138 @@ fn pathToBitRepresentation(path: []const u8) Code {
     };
 }
 
+pub fn HuffmanWriter(comptime Writer: type) type {
+    return struct {
+        const Self = @This();
+        const BitWriter = bit_writer.BitWriter(Writer);
+        writer: BitWriter,
+        codebook: *const Codebook,
+
+        /// codebook needs to be valid for the lifetime of huffman writer
+        pub fn init(writer: Writer, codebook: *const Codebook) Self {
+            return .{
+                .writer = bit_writer.bitWriter(writer),
+                .codebook = codebook,
+            };
+        }
+
+        pub fn write(self: *Self, data: []const u8) !void {
+            for (data) |v| {
+                const code_opt = &self.codebook[v];
+                if (code_opt.* == null) {
+                    continue;
+                }
+                const code = &code_opt.*.?;
+
+                try self.writer.write(code.*.val, code.*.num_bits);
+            }
+        }
+
+        pub fn finish(self: *Self) !void {
+            try self.writer.finish();
+        }
+    };
+}
+
+pub fn huffmanWriter(writer: anytype, codebook: *const Codebook) HuffmanWriter(@TypeOf(writer)) {
+    return HuffmanWriter(@TypeOf(writer)).init(writer, codebook);
+}
+
+pub fn HuffmanReader(comptime Reader: type) type {
+    return struct {
+        reader: Reader,
+        current_byte: u8,
+        // How many bits of the byte have we processed
+        byte_progress: u8,
+        table: *const HuffmanTable,
+        bytes_read: usize,
+        max_len: usize,
+
+        const Self = @This();
+
+        fn nextBit(self: *Self) !u1 {
+            if (self.byte_progress >= 8) {
+                self.current_byte = try self.reader.readByte();
+                self.byte_progress = 0;
+            }
+
+            var ret: u1 = @truncate(self.current_byte >> @intCast(self.byte_progress));
+
+            self.byte_progress += 1;
+            return ret;
+        }
+
+        pub fn next(self: *Self) !?u8 {
+            var node_idx = self.table.rootNodeIdx();
+
+            if (self.bytes_read >= self.max_len) {
+                return null;
+            }
+
+            while (true) {
+                var branch = switch (self.table.nodes.items[node_idx]) {
+                    .Leaf => |val| {
+                        self.bytes_read += 1;
+                        return val;
+                    },
+                    .Branch => |b| b,
+                };
+
+                const next_bit = try self.nextBit();
+                node_idx = switch (next_bit) {
+                    0 => branch.left,
+                    1 => branch.right,
+                };
+            }
+        }
+    };
+}
+
+pub fn huffmanReader(reader: anytype, table: *const HuffmanTable, max_len: usize) HuffmanReader(@TypeOf(reader)) {
+    return .{
+        .reader = reader,
+        .current_byte = 0,
+        .byte_progress = 8,
+        .table = table,
+        .bytes_read = 0,
+        .max_len = max_len,
+    };
+}
+
 test "bit representation from path" {
     var path = &.{ 0, 1, 1, 0, 0, 1 };
     try std.testing.expect(std.meta.eql(pathToBitRepresentation(path), .{
         .val = 0b100110,
         .num_bits = 6,
     }));
+}
+
+test "huffman back and forth" {
+    var alloc = std.testing.allocator;
+    const input = "this is a test string";
+
+    var table = try HuffmanTable.init(alloc, input);
+    defer table.deinit();
+
+    var codebook: Codebook = undefined;
+    try table.generateCodebook(alloc, &codebook);
+
+    var buf = std.ArrayList(u8).init(alloc);
+    defer buf.deinit();
+
+    var writer = huffmanWriter(buf.writer(), &codebook);
+    try writer.write(input);
+    try writer.finish();
+
+    var buf_reader = std.io.fixedBufferStream(buf.items);
+    var reader = huffmanReader(buf_reader.reader(), &table, input.len);
+
+    var output = std.ArrayList(u8).init(alloc);
+    defer output.deinit();
+
+    while (try reader.next()) |val| {
+        try output.append(val);
+    }
+
+    try std.testing.expectEqualStrings(input, output.items);
 }

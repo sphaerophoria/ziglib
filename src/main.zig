@@ -2,27 +2,25 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const huffman = @import("huffman.zig");
 const bit_writer = @import("bit_writer.zig");
-const huffman_writer = @import("huffman_writer.zig");
-const huffman_reader = @import("huffman_reader.zig");
 const z = @import("zlib.zig");
 
-pub fn compressString(alloc: std.mem.Allocator, input_data: []const u8, table: *const huffman.HuffmanTable) !std.ArrayList(u8) {
+pub fn huffmanCompress(alloc: std.mem.Allocator, input_data: []const u8, table: *const huffman.HuffmanTable) !std.ArrayList(u8) {
     var codebook: huffman.Codebook = undefined;
     try table.generateCodebook(alloc, &codebook);
 
     var buf = std.ArrayList(u8).init(alloc);
     errdefer buf.deinit();
 
-    var writer = huffman_writer.huffmanWriter(buf.writer(), &codebook);
+    var writer = huffman.huffmanWriter(buf.writer(), &codebook);
     try writer.write(input_data);
     try writer.finish();
 
     return buf;
 }
 
-fn decompress(alloc: std.mem.Allocator, data: []const u8, table: *const huffman.HuffmanTable, output_len: usize) !std.ArrayList(u8) {
+fn huffmanDecompress(alloc: std.mem.Allocator, data: []const u8, table: *const huffman.HuffmanTable, output_len: usize) !std.ArrayList(u8) {
     var buf_reader = std.io.fixedBufferStream(data);
-    var reader = huffman_reader.huffmanReader(buf_reader.reader(), table, output_len);
+    var reader = huffman.huffmanReader(buf_reader.reader(), table, output_len);
 
     var ret = std.ArrayList(u8).init(alloc);
     errdefer ret.deinit();
@@ -134,14 +132,14 @@ fn testHuffmanCompression(alloc: Allocator, args: *const Args) !void {
     var table = try huffman.HuffmanTable.init(alloc, args.input_data);
     defer table.deinit();
 
-    var compressed = try compressString(alloc, args.input_data, &table);
+    var compressed = try huffmanCompress(alloc, args.input_data, &table);
     defer compressed.deinit();
     std.debug.print("compressed: {}\n", .{HexSliceFormatter.init(compressed.items)});
 
     const compression_ratio = calcCompressionRatio(args.input_data.len, compressed.items.len);
     std.debug.print("compression ratio: {d:.3}\n", .{compression_ratio});
 
-    var decompressed = try decompress(alloc, compressed.items, &table, args.input_data.len);
+    var decompressed = try huffmanDecompress(alloc, compressed.items, &table, args.input_data.len);
     defer decompressed.deinit();
 
     std.debug.print("decompressed: {s}\n", .{decompressed.items});
