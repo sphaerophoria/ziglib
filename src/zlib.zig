@@ -6,7 +6,7 @@ const c = @cImport({
 
 // NOTE: z_stream holds internal state that is a self referential pointer.
 // Copying of z_stream is a big no no no no no no
-pub fn initZStream(z_stream: *c.z_stream, input_data: []const u8, output_buf: []u8) !void {
+fn initZStream(z_stream: *c.z_stream, input_data: []const u8, output_buf: []u8) !void {
     z_stream.zalloc = null;
     z_stream.zfree = null;
     z_stream.@"opaque" = null;
