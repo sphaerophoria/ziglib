@@ -118,7 +118,7 @@ const Args = struct {
     }
 };
 
-fn testZlibCompression(args: *const Args) !void {
+fn demoRealZlibCompression(args: *const Args) !void {
     var zlib_compression_buf: [4096]u8 = undefined;
     var compressed_size = try z.compressWithZlib(args.input_data, &zlib_compression_buf);
     std.debug.print("zlib compressed: {}\n", .{HexSliceFormatter.init(zlib_compression_buf[0..compressed_size])});
@@ -128,7 +128,7 @@ fn testZlibCompression(args: *const Args) !void {
     std.debug.print("zlib decompressed: {s}\n", .{zlib_decompression_buf[0..decompressed_size]});
 }
 
-fn testHuffmanCompression(alloc: Allocator, args: *const Args) !void {
+fn demoHuffmanCompression(alloc: Allocator, args: *const Args) !void {
     var table = try huffman.HuffmanTable.init(alloc, args.input_data);
     defer table.deinit();
 
@@ -159,10 +159,10 @@ pub fn main() !void {
     var args = try Args.parse();
     std.debug.print("Input data: {s}\n", .{args.input_data});
 
-    std.debug.print("#### Huffman ####\n", .{});
-    try testHuffmanCompression(alloc, &args);
+    std.debug.print("\n#### Huffman ####\n", .{});
+    try demoHuffmanCompression(alloc, &args);
     std.debug.print("\n#### Zlib ####\n", .{});
-    try testZlibCompression(&args);
+    try demoRealZlibCompression(&args);
 }
 
 test {
