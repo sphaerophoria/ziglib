@@ -1,7 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const huffman = @import("huffman.zig");
-const bit_writer = @import("bit_writer.zig");
 const z = @import("zlib.zig");
 
 pub fn huffmanCompress(alloc: std.mem.Allocator, input_data: []const u8, table: *const huffman.HuffmanTable) !std.ArrayList(u8) {

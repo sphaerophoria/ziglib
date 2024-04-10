@@ -1,5 +1,4 @@
 const std = @import("std");
-const bit_writer = @import("bit_writer.zig");
 
 pub const Code = struct {
     // FIXME: Code might not fit in in u8
@@ -177,14 +176,14 @@ fn pathToBitRepresentation(path: []const u8) Code {
 pub fn HuffmanWriter(comptime Writer: type) type {
     return struct {
         const Self = @This();
-        const BitWriter = bit_writer.BitWriter(Writer);
+        const BitWriter = std.io.BitWriter(.Little, Writer);
         writer: BitWriter,
         codebook: *const Codebook,
 
         /// codebook needs to be valid for the lifetime of huffman writer
         pub fn init(writer: Writer, codebook: *const Codebook) Self {
             return .{
-                .writer = bit_writer.bitWriter(writer),
+                .writer = std.io.bitWriter(.Little, writer),
                 .codebook = codebook,
             };
         }
@@ -197,12 +196,12 @@ pub fn HuffmanWriter(comptime Writer: type) type {
                 }
                 const code = &code_opt.*.?;
 
-                try self.writer.write(code.*.val, code.*.num_bits);
+                try self.writer.writeBits(code.*.val, @intCast(code.*.num_bits));
             }
         }
 
         pub fn finish(self: *Self) !void {
-            try self.writer.finish();
+            try self.writer.flushBits();
         }
     };
 }
