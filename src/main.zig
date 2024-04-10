@@ -4,13 +4,13 @@ const huffman = @import("huffman.zig");
 const z = @import("zlib.zig");
 
 pub fn huffmanCompress(alloc: std.mem.Allocator, input_data: []const u8, table: *const huffman.HuffmanTable) !std.ArrayList(u8) {
-    var codebook: huffman.Codebook = undefined;
-    try table.generateCodebook(alloc, &codebook);
+    var codebook = try table.generateCodebook(alloc);
+    defer codebook.deinit();
 
     var buf = std.ArrayList(u8).init(alloc);
     errdefer buf.deinit();
 
-    var writer = huffman.huffmanWriter(buf.writer(), &codebook);
+    var writer = huffman.huffmanWriter(buf.writer(), codebook.items);
     try writer.write(input_data);
     try writer.finish();
 

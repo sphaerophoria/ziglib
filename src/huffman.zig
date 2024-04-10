@@ -6,8 +6,6 @@ pub const Code = struct {
     num_bits: u3,
 };
 
-pub const Codebook = [256]?Code;
-
 pub const Node = union(enum) {
     Leaf: u8,
     Branch: struct {
@@ -28,6 +26,7 @@ pub const Node = union(enum) {
 pub const HuffmanTable = struct {
     const NodeArray = std.ArrayList(Node);
     nodes: NodeArray,
+    num_elems: usize,
 
     pub fn init(alloc: std.mem.Allocator, s: []const u8) !HuffmanTable {
         const freqs = countCharFrequencies(s);
@@ -66,6 +65,7 @@ pub const HuffmanTable = struct {
 
         return .{
             .nodes = nodes,
+            .num_elems = freqs.len,
         };
     }
 
@@ -95,7 +95,12 @@ pub const HuffmanTable = struct {
         return self.nodes.items[node_idx];
     }
 
-    pub fn generateCodebook(self: *const HuffmanTable, alloc: std.mem.Allocator, codebook: *Codebook) !void {
+    pub fn generateCodebook(self: *const HuffmanTable, alloc: std.mem.Allocator) !std.ArrayList(?Code) {
+        var ret = std.ArrayList(?Code).init(alloc);
+        errdefer ret.deinit();
+
+        try ret.resize(self.num_elems);
+        var codebook = ret.items;
         @memset(codebook, null);
 
         var path = std.ArrayList(u8).init(alloc);
@@ -125,6 +130,8 @@ pub const HuffmanTable = struct {
 
             path.items[path.items.len - 1] = 1;
         }
+
+        return ret;
     }
 };
 
@@ -178,10 +185,10 @@ pub fn HuffmanWriter(comptime Writer: type) type {
         const Self = @This();
         const BitWriter = std.io.BitWriter(.Little, Writer);
         writer: BitWriter,
-        codebook: *const Codebook,
+        codebook: []const ?Code,
 
         /// codebook needs to be valid for the lifetime of huffman writer
-        pub fn init(writer: Writer, codebook: *const Codebook) Self {
+        pub fn init(writer: Writer, codebook: []const ?Code) Self {
             return .{
                 .writer = std.io.bitWriter(.Little, writer),
                 .codebook = codebook,
@@ -206,7 +213,7 @@ pub fn HuffmanWriter(comptime Writer: type) type {
     };
 }
 
-pub fn huffmanWriter(writer: anytype, codebook: *const Codebook) HuffmanWriter(@TypeOf(writer)) {
+pub fn huffmanWriter(writer: anytype, codebook: []const ?Code) HuffmanWriter(@TypeOf(writer)) {
     return HuffmanWriter(@TypeOf(writer)).init(writer, codebook);
 }
 
@@ -286,13 +293,13 @@ test "huffman back and forth" {
     var table = try HuffmanTable.init(alloc, input);
     defer table.deinit();
 
-    var codebook: Codebook = undefined;
-    try table.generateCodebook(alloc, &codebook);
+    var codebook = try table.generateCodebook(alloc);
+    defer codebook.deinit();
 
     var buf = std.ArrayList(u8).init(alloc);
     defer buf.deinit();
 
-    var writer = huffmanWriter(buf.writer(), &codebook);
+    var writer = huffmanWriter(buf.writer(), codebook.items);
     try writer.write(input);
     try writer.finish();
 
