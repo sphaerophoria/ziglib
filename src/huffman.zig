@@ -90,48 +90,111 @@ pub fn HuffmanTable(comptime T: type) type {
             var codebook = ret.items;
             @memset(codebook, null);
 
-            var path = std.ArrayList(u8).init(alloc);
-            defer path.deinit();
+            var it = try HuffmanIt(T).init(alloc, self.nodes.items, self.rootNodeIdx());
+            defer it.deinit();
 
-            var parents = std.ArrayList(Node(T)).init(alloc);
-            defer parents.deinit();
-
-            try path.append(0);
-            try parents.append(self.nodes.items[self.rootNodeIdx()]);
-
-            while (path.items.len > 0) {
-                var last_parent = &parents.items[parents.items.len - 1];
-                var last_path = path.items[path.items.len - 1];
-                var node_idx = switch (last_path) {
-                    0 => last_parent.Branch.left,
-                    1 => last_parent.Branch.right,
-                    else => unreachable,
-                };
-                var node = self.nodes.items[node_idx];
-                switch (node) {
-                    .Leaf => |leaf| {
-                        codebook[leaf] = pathToBitRepresentation(path.items);
-                    },
-                    .Branch => {
-                        try path.append(0);
-                        try parents.append(node);
-                        continue;
-                    },
-                }
-
-                while (path.items.len > 0 and (path.items[path.items.len - 1] == 1)) {
-                    _ = path.pop();
-                    _ = parents.pop();
-                }
-
-                if (path.items.len == 0) {
-                    break;
-                }
-
-                path.items[path.items.len - 1] = 1;
+            while (try it.next()) |val| {
+                codebook[val.val] = pathToBitRepresentation(val.path);
             }
 
             return ret;
+        }
+    };
+}
+
+fn HuffmanIt(comptime T: type) type {
+    return struct {
+        const Output = struct {
+            path: []const u8,
+            val: T,
+        };
+
+        const Self = @This();
+
+        path: std.ArrayList(u8),
+        parents: std.ArrayList(*Node(T)),
+        nodes: []Node(T),
+
+        fn init(alloc: Allocator, nodes: []Node(T), root_idx: usize) !Self {
+            var path = std.ArrayList(u8).init(alloc);
+            var parents = std.ArrayList(*Node(T)).init(alloc);
+
+            try parents.append(&nodes[root_idx]);
+
+            return .{
+                .path = path,
+                .parents = parents,
+                .nodes = nodes,
+            };
+        }
+
+        fn deinit(self: *Self) void {
+            self.path.deinit();
+            self.parents.deinit();
+        }
+
+        fn currentNode(self: *Self) ?*Node(T) {
+            if (self.parents.items.len == 0 or self.path.items.len == 0) {
+                return null;
+            }
+
+            var last_parent = self.parents.items[self.parents.items.len - 1];
+            var last_path = self.path.items[self.path.items.len - 1];
+            var node_idx = switch (last_path) {
+                0 => last_parent.Branch.left,
+                1 => last_parent.Branch.right,
+                else => unreachable,
+            };
+            var node = &self.nodes[node_idx];
+            return node;
+        }
+
+        // Update internal state with one step along the graph
+        fn step(self: *Self) !void {
+            var node = self.currentNode() orelse {
+                try self.path.append(0);
+                return;
+            };
+
+            switch (node.*) {
+                .Leaf => {},
+                .Branch => {
+                    try self.path.append(0);
+                    try self.parents.append(node);
+                    return;
+                },
+            }
+
+            while (self.path.items.len > 0 and (self.path.items[self.path.items.len - 1] == 1)) {
+                _ = self.path.pop();
+                _ = self.parents.pop();
+            }
+
+            if (self.path.items.len == 0) {
+                return;
+            }
+
+            self.path.items[self.path.items.len - 1] = 1;
+        }
+
+        // DFS, get the next leaf node
+        fn next(self: *Self) !?Output {
+            while (true) {
+                try self.step();
+                var node = self.currentNode() orelse {
+                    return null;
+                };
+
+                switch (node.*) {
+                    .Leaf => |leaf| {
+                        return .{
+                            .path = self.path.items,
+                            .val = leaf,
+                        };
+                    },
+                    .Branch => {},
+                }
+            }
         }
     };
 }
