@@ -145,6 +145,20 @@ fn demoHuffmanCompression(alloc: Allocator, args: *const Args) !void {
     std.debug.print("decompressed: {s}\n", .{decompressed.items});
 }
 
+fn demoCustomDecompressor(input: []const u8) !void {
+    var buf: [4096]u8 = undefined;
+    var buf_stream = std.io.fixedBufferStream(&buf);
+    var bytes_written = try z.generateZlibNoCompression(buf_stream.writer(), input);
+    std.debug.print("custom generated compressed: {}\n", .{HexSliceFormatter{ .buf = buf[0..bytes_written] }});
+
+    var output: [4096]u8 = undefined;
+    buf_stream.reset();
+    var decompressor = try z.zlibDecompressor(buf_stream.reader());
+
+    var read_bytes = try decompressor.readBlock(&output);
+    std.debug.print("Block contained: {s}\n", .{output[0..read_bytes]});
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer {
@@ -163,6 +177,8 @@ pub fn main() !void {
     try demoHuffmanCompression(alloc, &args);
     std.debug.print("\n#### Zlib ####\n", .{});
     try demoRealZlibCompression(&args);
+    std.debug.print("\n#### Custom zlib decompressor ####\n", .{});
+    try demoCustomDecompressor(args.input_data);
 }
 
 test {
