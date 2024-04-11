@@ -82,24 +82,6 @@ pub fn HuffmanTable(comptime T: type) type {
             return self.nodes.items.len - 1;
         }
 
-        pub fn nodeFromCode(self: *const Self, code: []const u8) Node(T) {
-            var node_idx = self.nodes.items.len - 1;
-            for (code) |v| {
-                var node = switch (self.nodes.items[node_idx]) {
-                    .Branch => |b| b,
-                    .Leaf => unreachable,
-                };
-
-                switch (v) {
-                    0 => node_idx = node.left,
-                    1 => node_idx = node.right,
-                    else => unreachable,
-                }
-            }
-
-            return self.nodes.items[node_idx];
-        }
-
         pub fn generateCodebook(self: *const Self, alloc: std.mem.Allocator) !std.ArrayList(?Code) {
             var ret = std.ArrayList(?Code).init(alloc);
             errdefer ret.deinit();
@@ -111,22 +93,35 @@ pub fn HuffmanTable(comptime T: type) type {
             var path = std.ArrayList(u8).init(alloc);
             defer path.deinit();
 
+            var parents = std.ArrayList(Node(T)).init(alloc);
+            defer parents.deinit();
+
             try path.append(0);
+            try parents.append(self.nodes.items[self.rootNodeIdx()]);
 
             while (path.items.len > 0) {
-                var node = self.nodeFromCode(path.items);
+                var last_parent = &parents.items[parents.items.len - 1];
+                var last_path = path.items[path.items.len - 1];
+                var node_idx = switch (last_path) {
+                    0 => last_parent.Branch.left,
+                    1 => last_parent.Branch.right,
+                    else => unreachable,
+                };
+                var node = self.nodes.items[node_idx];
                 switch (node) {
                     .Leaf => |leaf| {
                         codebook[leaf] = pathToBitRepresentation(path.items);
                     },
                     .Branch => {
                         try path.append(0);
+                        try parents.append(node);
                         continue;
                     },
                 }
 
                 while (path.items.len > 0 and (path.items[path.items.len - 1] == 1)) {
                     _ = path.pop();
+                    _ = parents.pop();
                 }
 
                 if (path.items.len == 0) {
