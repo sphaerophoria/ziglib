@@ -113,6 +113,7 @@ const Args = struct {
             \\Usage: {s} --input-data [data]
             \\
             \\A program to replace zlib, written in zig
+            \\
         , .{process_name}) catch {};
         std.process.exit(1);
     }
