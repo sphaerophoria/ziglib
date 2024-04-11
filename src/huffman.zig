@@ -1,9 +1,8 @@
 const std = @import("std");
 
-pub const Code = struct {
-    // FIXME: Code might not fit in in u8
-    val: u8,
-    num_bits: u3,
+const Code = struct {
+    val: u64,
+    num_bits: u64,
 };
 
 pub const Node = union(enum) {
@@ -167,9 +166,9 @@ fn printCharFrequencies(freqs: *const CharFrequencies) void {
 }
 
 fn pathToBitRepresentation(path: []const u8) Code {
-    var code: u8 = 0;
+    var code: u64 = 0;
     for (0..path.len) |i| {
-        const val = path[i];
+        const val: u64 = @intCast(path[i]);
         std.debug.assert(val < 2); // Path should only have 0 or 1
         code |= val << @intCast(i);
     }
