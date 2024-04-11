@@ -444,9 +444,21 @@ pub fn HuffmanReader(comptime Output: type, comptime Reader: type) type {
     };
 }
 
-// FIXME: Maybe try finding a way around this type rediculousness
-// FIXME: Find way to error gracefully on invalid table input
-pub fn huffmanReader(reader: anytype, table: anytype, max_len: usize) HuffmanReader(@TypeOf(table.*).DataType, @TypeOf(reader)) {
+fn HuffmanReaderFromArgs(comptime Reader: type, comptime Table: type) type {
+    switch (@typeInfo(Table)) {
+        .Pointer => |p| {
+            if (HuffmanTable(p.child.DataType) != p.child) {
+                @compileError("HuffmanReader requires a *const HuffmanTable, but got unexpected type");
+            }
+            return HuffmanReader(p.child.DataType, Reader);
+        },
+        else => {
+            @compileError("HuffmanReader requires a *const HuffmanTable, but got non-pointer type");
+        },
+    }
+}
+
+pub fn huffmanReader(reader: anytype, table: anytype, max_len: usize) HuffmanReaderFromArgs(@TypeOf(reader), @TypeOf(table)) {
     return .{
         .reader = reader,
         .table = table,
