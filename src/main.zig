@@ -3,7 +3,7 @@ const Allocator = std.mem.Allocator;
 const huffman = @import("huffman.zig");
 const z = @import("zlib.zig");
 
-pub fn huffmanCompress(alloc: std.mem.Allocator, input_data: []const u8, table: *const huffman.HuffmanTable) !std.ArrayList(u8) {
+pub fn huffmanCompress(alloc: std.mem.Allocator, input_data: []const u8, table: *const huffman.HuffmanTable(u8)) !std.ArrayList(u8) {
     var codebook = try table.generateCodebook(alloc);
     defer codebook.deinit();
 
@@ -17,7 +17,7 @@ pub fn huffmanCompress(alloc: std.mem.Allocator, input_data: []const u8, table: 
     return buf;
 }
 
-fn huffmanDecompress(alloc: std.mem.Allocator, data: []const u8, table: *const huffman.HuffmanTable, output_len: usize) !std.ArrayList(u8) {
+fn huffmanDecompress(alloc: std.mem.Allocator, data: []const u8, table: *const huffman.HuffmanTable(u8), output_len: usize) !std.ArrayList(u8) {
     var buf_reader = std.io.fixedBufferStream(data);
     var reader = huffman.huffmanReader(buf_reader.reader(), table, output_len);
 
@@ -128,7 +128,7 @@ fn demoRealZlibCompression(args: *const Args) !void {
 }
 
 fn demoHuffmanCompression(alloc: Allocator, args: *const Args) !void {
-    var table = try huffman.HuffmanTable.init(alloc, args.input_data);
+    var table = try huffman.HuffmanTable(u8).init(alloc, args.input_data);
     defer table.deinit();
 
     var compressed = try huffmanCompress(alloc, args.input_data, &table);
