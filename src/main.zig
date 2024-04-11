@@ -11,7 +11,7 @@ pub fn huffmanCompress(alloc: std.mem.Allocator, input_data: []const u8, table: 
     errdefer buf.deinit();
 
     var writer = huffman.huffmanWriter(buf.writer(), codebook.items);
-    try writer.write(input_data);
+    try writer.write(u8, input_data);
     try writer.finish();
 
     return buf;
@@ -128,7 +128,7 @@ fn demoRealZlibCompression(args: *const Args) !void {
 }
 
 fn demoHuffmanCompression(alloc: Allocator, args: *const Args) !void {
-    var table = try huffman.HuffmanTable(u8).init(alloc, args.input_data);
+    var table = try huffman.HuffmanTable(u8).init(alloc, &huffman.countCharFrequencies(args.input_data));
     defer table.deinit();
 
     var compressed = try huffmanCompress(alloc, args.input_data, &table);

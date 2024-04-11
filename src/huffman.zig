@@ -1,38 +1,40 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 
 const Code = struct {
     val: u64,
     num_bits: u64,
 };
 
-pub const Node = union(enum) {
-    Leaf: u8,
-    Branch: struct {
-        left: usize,
-        right: usize,
-    },
+pub fn Node(comptime T: type) type {
+    return union(enum) {
+        Leaf: T,
+        Branch: struct {
+            left: usize,
+            right: usize,
+        },
 
-    pub fn format(value: Node, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
-        _ = options;
-        _ = fmt;
-        switch (value) {
-            .Leaf => |v| try writer.print("Leaf {{ {} }}", .{v}),
-            .Branch => |v| try writer.print("Branch {{ .left: {}, .right: {} }}", .{ v.left, v.right }),
+        pub fn format(value: Node(T), comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+            _ = options;
+            _ = fmt;
+            switch (value) {
+                .Leaf => |v| try writer.print("Leaf {{ {} }}", .{v}),
+                .Branch => |v| try writer.print("Branch {{ .left: {}, .right: {} }}", .{ v.left, v.right }),
+            }
         }
-    }
-};
+    };
+}
 
 pub fn HuffmanTable(comptime T: type) type {
-    _ = T;
     return struct {
-        const NodeArray = std.ArrayList(Node);
+        const NodeArray = std.ArrayList(Node(T));
+        const Self = @This();
+        const DataType = T;
+
         nodes: NodeArray,
         num_elems: usize,
 
-        const Self = @This();
-
-        pub fn init(alloc: std.mem.Allocator, s: []const u8) !Self {
-            const freqs = countCharFrequencies(s);
+        pub fn init(alloc: std.mem.Allocator, freqs: []const u64) !Self {
             var nodes = NodeArray.init(alloc);
 
             const NodeQueue = std.PriorityQueue(FreqCountedNode, void, freqCountedNodePriority);
@@ -80,7 +82,7 @@ pub fn HuffmanTable(comptime T: type) type {
             return self.nodes.items.len - 1;
         }
 
-        pub fn nodeFromCode(self: *const Self, code: []const u8) Node {
+        pub fn nodeFromCode(self: *const Self, code: []const u8) Node(T) {
             var node_idx = self.nodes.items.len - 1;
             for (code) |v| {
                 var node = switch (self.nodes.items[node_idx]) {
@@ -149,9 +151,9 @@ fn freqCountedNodePriority(context: void, a: FreqCountedNode, b: FreqCountedNode
     return std.math.order(a.count, b.count);
 }
 
-const CharFrequencies = [255]u64;
+pub const CharFrequencies = [256]u64;
 
-fn countCharFrequencies(s: []const u8) CharFrequencies {
+pub fn countCharFrequencies(s: []const u8) CharFrequencies {
     var ret = std.mem.zeroes(CharFrequencies);
     for (s) |c| {
         ret[c] += 1;
@@ -199,7 +201,7 @@ pub fn HuffmanWriter(comptime Writer: type) type {
             };
         }
 
-        pub fn write(self: *Self, data: []const u8) !void {
+        pub fn write(self: *Self, comptime T: type, data: []const T) !void {
             for (data) |v| {
                 const code_opt = &self.codebook[v];
                 if (code_opt.* == null) {
@@ -221,13 +223,13 @@ pub fn huffmanWriter(writer: anytype, codebook: []const ?Code) HuffmanWriter(@Ty
     return HuffmanWriter(@TypeOf(writer)).init(writer, codebook);
 }
 
-pub fn HuffmanReader(comptime Reader: type) type {
+pub fn HuffmanReader(comptime Output: type, comptime Reader: type) type {
     return struct {
         reader: Reader,
         current_byte: u8,
         // How many bits of the byte have we processed
         byte_progress: u8,
-        table: *const HuffmanTable(u8),
+        table: *const HuffmanTable(Output),
         bytes_read: usize,
         max_len: usize,
 
@@ -245,7 +247,7 @@ pub fn HuffmanReader(comptime Reader: type) type {
             return ret;
         }
 
-        pub fn next(self: *Self) !?u8 {
+        pub fn next(self: *Self) !?Output {
             var node_idx = self.table.rootNodeIdx();
 
             if (self.bytes_read >= self.max_len) {
@@ -271,7 +273,9 @@ pub fn HuffmanReader(comptime Reader: type) type {
     };
 }
 
-pub fn huffmanReader(reader: anytype, table: *const HuffmanTable(u8), max_len: usize) HuffmanReader(@TypeOf(reader)) {
+// FIXME: Maybe try finding a way around this type rediculousness
+// FIXME: Find way to error gracefully on invalid table input
+pub fn huffmanReader(reader: anytype, table: anytype, max_len: usize) HuffmanReader(@TypeOf(table.*).DataType, @TypeOf(reader)) {
     return .{
         .reader = reader,
         .current_byte = 0,
@@ -294,7 +298,7 @@ test "huffman back and forth" {
     var alloc = std.testing.allocator;
     const input = "this is a test string";
 
-    var table = try HuffmanTable(u8).init(alloc, input);
+    var table = try HuffmanTable(u8).init(alloc, &countCharFrequencies(input));
     defer table.deinit();
 
     var codebook = try table.generateCodebook(alloc);
@@ -304,7 +308,7 @@ test "huffman back and forth" {
     defer buf.deinit();
 
     var writer = huffmanWriter(buf.writer(), codebook.items);
-    try writer.write(input);
+    try writer.write(u8, input);
     try writer.finish();
 
     var buf_reader = std.io.fixedBufferStream(buf.items);
