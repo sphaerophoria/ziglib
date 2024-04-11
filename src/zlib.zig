@@ -131,13 +131,58 @@ pub fn generateZlibNoCompression(writer: anytype, data: []const u8) !usize {
     return counting_writer.bytes_written;
 }
 
+fn getFixedHuffmanTable(alloc: Allocator) !huffman.HuffmanTable(u16) {
+    var bit_lengths = std.ArrayList(u64).init(alloc);
+    defer bit_lengths.deinit();
+
+    try bit_lengths.resize(288);
+    @memset(bit_lengths.items[0..144], 8);
+    @memset(bit_lengths.items[144..256], 9);
+    @memset(bit_lengths.items[256..280], 7);
+    @memset(bit_lengths.items[280..288], 8);
+
+    return try huffman.HuffmanTable(u16).initFromBitLengths(alloc, bit_lengths.items);
+}
+
+pub fn generateZlibStaticHuffman(alloc: Allocator, writer: anytype, data: []const u8) !usize {
+    var huffman_table = try getFixedHuffmanTable(alloc);
+    defer huffman_table.deinit();
+    var codebook = try huffman_table.generateCodebook(alloc);
+    defer codebook.deinit();
+
+    var counting_writer = std.io.countingWriter(writer);
+    var header = Header{ .cmf = .{
+        .cm = 8,
+        .cinfo = 3,
+    }, .flg = .{
+        .fcheck = 0,
+        .fdict = false,
+        .flevel = 1,
+    } };
+
+    var header_u16: u16 = @as(u16, @as(u8, @bitCast(header.cmf))) * 256 + @as(u8, @bitCast(header.flg));
+
+    header.flg.fcheck = @intCast((31 - header_u16 % 31) % 31);
+
+    try counting_writer.writer().writeAll(std.mem.asBytes(&header));
+
+    var huffman_writer = huffman.huffmanWriter(counting_writer.writer(), codebook.items);
+    try huffman_writer.writer.writeBits(@as(u8, 0b011), 3);
+    try huffman_writer.write(u8, data);
+    try huffman_writer.write(u16, &[_]u16{256});
+    try huffman_writer.finish();
+
+    return counting_writer.bytes_written;
+}
+
 pub fn ZlibDecompressor(comptime Reader: type) type {
     return struct {
         reader: BitReader(.Little, Reader),
+        fixedHuffmanTable: huffman.HuffmanTable(u16),
 
         const Self = @This();
 
-        pub fn init(reader: anytype) !Self {
+        pub fn init(alloc: Allocator, reader: anytype) !Self {
             const header = try readZlibHeader(reader);
             std.log.debug("zlib header: {any}", .{header});
 
@@ -152,7 +197,12 @@ pub fn ZlibDecompressor(comptime Reader: type) type {
 
             return .{
                 .reader = std.io.bitReader(.Little, reader),
+                .fixedHuffmanTable = try getFixedHuffmanTable(alloc),
             };
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.fixedHuffmanTable.deinit();
         }
 
         pub fn readBlock(self: *Self, output: []u8) !usize {
@@ -194,9 +244,17 @@ pub fn ZlibDecompressor(comptime Reader: type) type {
                     return len;
                 },
                 0b01 => {
-                    // static huffman
-                    std.log.err("Cannot decompress static huffman deflate block", .{});
-                    return error.NotImplemented;
+                    var reader = huffman.huffmanReader(&self.reader, &self.fixedHuffmanTable, std.math.maxInt(usize));
+                    var output_idx: usize = 0;
+                    while (try reader.next()) |val| {
+                        if (val < 256) {
+                            output[output_idx] = @intCast(val);
+                            output_idx += 1;
+                        } else if (val == 256) {
+                            break;
+                        }
+                    }
+                    return output_idx;
                 },
                 0b10 => {
                     // dynamic huffman
@@ -211,8 +269,8 @@ pub fn ZlibDecompressor(comptime Reader: type) type {
     };
 }
 
-pub fn zlibDecompressor(reader: anytype) !ZlibDecompressor(@TypeOf(reader)) {
-    return ZlibDecompressor(@TypeOf(reader)).init(reader);
+pub fn zlibDecompressor(alloc: Allocator, reader: anytype) !ZlibDecompressor(@TypeOf(reader)) {
+    return ZlibDecompressor(@TypeOf(reader)).init(alloc, reader);
 }
 
 test "zlib back and forth" {
@@ -252,7 +310,43 @@ test "no compression block decompression" {
 
     var decompressed: [input.len]u8 = undefined;
     var buf_stream = std.io.fixedBufferStream(buf.items);
-    var decompressor = try zlibDecompressor(buf_stream.reader());
+    var decompressor = try zlibDecompressor(alloc, buf_stream.reader());
+    defer decompressor.deinit();
+
+    var decompressed_len = try decompressor.readBlock(&decompressed);
+
+    try std.testing.expectEqualStrings(input, decompressed[0..decompressed_len]);
+}
+
+test "static huffman block generation" {
+    var alloc = std.testing.allocator;
+    var buf = std.ArrayList(u8).init(alloc);
+    defer buf.deinit();
+
+    const input = "hello world";
+    const num_written = try generateZlibStaticHuffman(alloc, buf.writer(), input);
+    try std.testing.expectEqual(num_written, buf.items.len);
+
+    var decompressed: [input.len]u8 = undefined;
+    // For the time being, we error out because we do not generate the adler32 segment
+    _ = decompressWithZlib(buf.items, &decompressed) catch {};
+    try std.testing.expectEqualStrings(input, &decompressed);
+}
+
+test "static huffman block decompression" {
+    var alloc = std.testing.allocator;
+    var buf = std.ArrayList(u8).init(alloc);
+    defer buf.deinit();
+
+    const input = "hello world";
+    const num_written = try generateZlibStaticHuffman(alloc, buf.writer(), input);
+    try std.testing.expectEqual(num_written, buf.items.len);
+
+    var decompressed: [input.len]u8 = undefined;
+    var buf_stream = std.io.fixedBufferStream(buf.items);
+    var decompressor = try zlibDecompressor(alloc, buf_stream.reader());
+    defer decompressor.deinit();
+
     var decompressed_len = try decompressor.readBlock(&decompressed);
 
     try std.testing.expectEqualStrings(input, decompressed[0..decompressed_len]);

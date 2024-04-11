@@ -32,6 +32,7 @@ pub fn HuffmanTable(comptime T: type) type {
         const DataType = T;
 
         nodes: NodeArray,
+        root: usize,
         num_elems: usize,
 
         pub fn init(alloc: std.mem.Allocator, freqs: []const u64) !Self {
@@ -70,16 +71,105 @@ pub fn HuffmanTable(comptime T: type) type {
 
             return .{
                 .nodes = nodes,
+                .root = nodes.items.len - 1,
                 .num_elems = freqs.len,
+            };
+        }
+
+        pub fn initFromBitLengths(alloc: Allocator, bit_lengths: []const u64) !Self {
+            const ElemWithBitLength = struct {
+                elem: T,
+                bit_length: u64,
+                const ElemSelf = @This();
+
+                pub fn lessThan(context: void, lhs: ElemSelf, rhs: ElemSelf) bool {
+                    _ = context;
+                    if (lhs.bit_length == rhs.bit_length) {
+                        return lhs.elem < rhs.elem;
+                    }
+
+                    return lhs.bit_length < rhs.bit_length;
+                }
+            };
+
+            var elem_lengths = try std.ArrayList(ElemWithBitLength).initCapacity(alloc, bit_lengths.len);
+            defer elem_lengths.deinit();
+
+            for (bit_lengths, 0..) |bit_length, i| {
+                try elem_lengths.append(.{
+                    .elem = @intCast(i),
+                    .bit_length = bit_length,
+                });
+            }
+
+            std.sort.block(ElemWithBitLength, elem_lengths.items, {}, ElemWithBitLength.lessThan);
+
+            var nodes = NodeArray.init(alloc);
+            errdefer nodes.deinit();
+
+            _ = try addEmptyBranchToNodeList(T, &nodes);
+
+            var code: u64 = 0;
+            for (0..elem_lengths.items.len) |i| {
+                //std.debug.print("Working on index: {}, code: {b}\n", .{i, code});
+                const elem_length = &elem_lengths.items[i];
+                if (elem_length.bit_length == 0) {
+                    continue;
+                }
+
+                var next_bit_length = if (i == elem_lengths.items.len - 1) elem_length.bit_length else elem_lengths.items[i + 1].bit_length;
+
+                var code_it = CodeIter.init(code, @intCast(elem_length.bit_length));
+                var node_idx: usize = 0;
+
+                while (code_it.next()) |walk_dir| {
+                    //std.debug.print("walking: {}\n", .{walk_dir});
+                    var node = &nodes.items[node_idx];
+
+                    switch (node.*) {
+                        .Branch => {},
+                        .Leaf => {
+                            std.log.err("WTF leaf", .{});
+                            continue;
+                        },
+                    }
+                    switch (walk_dir) {
+                        true => {
+                            if (node.Branch.right == std.math.maxInt(usize)) {
+                                var new_idx = try addEmptyBranchToNodeList(T, &nodes);
+                                node = &nodes.items[node_idx];
+                                node.Branch.right = new_idx;
+                            }
+                            node_idx = node.Branch.right;
+                        },
+                        false => {
+                            if (node.Branch.left == std.math.maxInt(usize)) {
+                                var new_idx = try addEmptyBranchToNodeList(T, &nodes);
+                                node = &nodes.items[node_idx];
+                                node.Branch.left = new_idx;
+                            }
+                            node_idx = node.Branch.left;
+                        },
+                    }
+                }
+
+                code = (code + 1) << @intCast(next_bit_length - elem_length.bit_length);
+
+                var node = &nodes.items[node_idx];
+                node.* = .{
+                    .Leaf = elem_length.elem,
+                };
+            }
+
+            return .{
+                .nodes = nodes,
+                .root = 0,
+                .num_elems = bit_lengths.len,
             };
         }
 
         pub fn deinit(self: Self) void {
             self.nodes.deinit();
-        }
-
-        pub fn rootNodeIdx(self: *const Self) usize {
-            return self.nodes.items.len - 1;
         }
 
         pub fn generateCodebook(self: *const Self, alloc: std.mem.Allocator) !std.ArrayList(?Code) {
@@ -90,7 +180,7 @@ pub fn HuffmanTable(comptime T: type) type {
             var codebook = ret.items;
             @memset(codebook, null);
 
-            var it = try HuffmanIt(T).init(alloc, self.nodes.items, self.rootNodeIdx());
+            var it = try HuffmanIt(T).init(alloc, self.nodes.items, self.root);
             defer it.deinit();
 
             while (try it.next()) |val| {
@@ -244,6 +334,37 @@ fn pathToBitRepresentation(path: []const u8) Code {
     };
 }
 
+const CodeIter = struct {
+    code: u64,
+    bit_index: u8,
+
+    pub fn init(code: u64, bit_length: u8) CodeIter {
+        return .{
+            .code = code,
+            .bit_index = 64 - bit_length + 1,
+        };
+    }
+
+    pub fn next(self: *CodeIter) ?bool {
+        if (self.bit_index > 64) {
+            return null;
+        }
+
+        var ret = ((self.code >> @intCast(64 - self.bit_index)) & 0x1) != 0;
+        self.bit_index += 1;
+        return ret;
+    }
+};
+
+fn addEmptyBranchToNodeList(comptime T: type, nodes: *std.ArrayList(Node(T))) !usize {
+    try nodes.append(.{ .Branch = .{
+        .left = std.math.maxInt(usize),
+        .right = std.math.maxInt(usize),
+    } });
+
+    return nodes.items.len - 1;
+}
+
 pub fn HuffmanWriter(comptime Writer: type) type {
     return struct {
         const Self = @This();
@@ -298,7 +419,7 @@ pub fn HuffmanReader(comptime Output: type, comptime Reader: type) type {
         }
 
         pub fn next(self: *Self) !?Output {
-            var node_idx = self.table.rootNodeIdx();
+            var node_idx = self.table.root;
 
             if (self.bytes_read >= self.max_len) {
                 return null;
@@ -371,4 +492,16 @@ test "huffman back and forth" {
     }
 
     try std.testing.expectEqualStrings(input, output.items);
+}
+
+test "huffman code iter" {
+    var it = CodeIter.init(0b1101, 4);
+    var path = std.ArrayList(bool).init(std.testing.allocator);
+    defer path.deinit();
+
+    while (it.next()) |val| {
+        try path.append(val);
+    }
+
+    try std.testing.expectEqualSlices(bool, &[4]bool{ true, true, false, true }, path.items);
 }

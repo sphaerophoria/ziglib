@@ -145,18 +145,39 @@ fn demoHuffmanCompression(alloc: Allocator, args: *const Args) !void {
     std.debug.print("decompressed: {s}\n", .{decompressed.items});
 }
 
-fn demoCustomDecompressor(input: []const u8) !void {
+fn demoCustomDecompressorNoCompression(alloc: Allocator, input: []const u8) !void {
     var buf: [4096]u8 = undefined;
     var buf_stream = std.io.fixedBufferStream(&buf);
     var bytes_written = try z.generateZlibNoCompression(buf_stream.writer(), input);
-    std.debug.print("custom generated compressed: {}\n", .{HexSliceFormatter{ .buf = buf[0..bytes_written] }});
+    std.debug.print("custom generated no compression: {}\n", .{HexSliceFormatter{ .buf = buf[0..bytes_written] }});
 
     var output: [4096]u8 = undefined;
     buf_stream.reset();
-    var decompressor = try z.zlibDecompressor(buf_stream.reader());
+    var decompressor = try z.zlibDecompressor(alloc, buf_stream.reader());
+    defer decompressor.deinit();
 
     var read_bytes = try decompressor.readBlock(&output);
-    std.debug.print("Block contained: {s}\n", .{output[0..read_bytes]});
+    std.debug.print("No compression block contained: {s}\n", .{output[0..read_bytes]});
+}
+
+fn demoCustomDecompressorFixedCompression(alloc: Allocator, input: []const u8) !void {
+    var buf: [4096]u8 = undefined;
+    var buf_stream = std.io.fixedBufferStream(&buf);
+    var bytes_written = try z.generateZlibStaticHuffman(alloc, buf_stream.writer(), input);
+    std.debug.print("custom generated static huffman: {}\n", .{HexSliceFormatter{ .buf = buf[0..bytes_written] }});
+
+    var output: [4096]u8 = undefined;
+    buf_stream.reset();
+    var decompressor = try z.zlibDecompressor(alloc, buf_stream.reader());
+    defer decompressor.deinit();
+
+    var read_bytes = try decompressor.readBlock(&output);
+    std.debug.print("static huffman block contained: {s}\n", .{output[0..read_bytes]});
+}
+
+fn demoCustomDecompressor(alloc: Allocator, input: []const u8) !void {
+    try demoCustomDecompressorNoCompression(alloc, input);
+    try demoCustomDecompressorFixedCompression(alloc, input);
 }
 
 pub fn main() !void {
@@ -178,7 +199,7 @@ pub fn main() !void {
     std.debug.print("\n#### Zlib ####\n", .{});
     try demoRealZlibCompression(&args);
     std.debug.print("\n#### Custom zlib decompressor ####\n", .{});
-    try demoCustomDecompressor(args.input_data);
+    try demoCustomDecompressor(alloc, args.input_data);
 }
 
 test {
