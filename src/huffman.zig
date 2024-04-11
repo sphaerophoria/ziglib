@@ -221,9 +221,6 @@ pub fn huffmanWriter(writer: anytype, codebook: []const ?Code) HuffmanWriter(@Ty
 pub fn HuffmanReader(comptime Output: type, comptime Reader: type) type {
     return struct {
         reader: Reader,
-        current_byte: u8,
-        // How many bits of the byte have we processed
-        byte_progress: u8,
         table: *const HuffmanTable(Output),
         bytes_read: usize,
         max_len: usize,
@@ -231,14 +228,9 @@ pub fn HuffmanReader(comptime Output: type, comptime Reader: type) type {
         const Self = @This();
 
         fn nextBit(self: *Self) !u1 {
-            if (self.byte_progress >= 8) {
-                self.current_byte = try self.reader.readByte();
-                self.byte_progress = 0;
-            }
-
-            var ret: u1 = @truncate(self.current_byte >> @intCast(self.byte_progress));
-
-            self.byte_progress += 1;
+            var num_bits: usize = 0;
+            var ret = try self.reader.readBits(u1, 1, &num_bits);
+            std.debug.assert(num_bits == 1);
             return ret;
         }
 
@@ -273,8 +265,6 @@ pub fn HuffmanReader(comptime Output: type, comptime Reader: type) type {
 pub fn huffmanReader(reader: anytype, table: anytype, max_len: usize) HuffmanReader(@TypeOf(table.*).DataType, @TypeOf(reader)) {
     return .{
         .reader = reader,
-        .current_byte = 0,
-        .byte_progress = 8,
         .table = table,
         .bytes_read = 0,
         .max_len = max_len,
@@ -307,7 +297,8 @@ test "huffman back and forth" {
     try writer.finish();
 
     var buf_reader = std.io.fixedBufferStream(buf.items);
-    var reader = huffmanReader(buf_reader.reader(), &table, input.len);
+    var bit_reader = std.io.bitReader(.Little, buf_reader.reader());
+    var reader = huffmanReader(bit_reader, &table, input.len);
 
     var output = std.ArrayList(u8).init(alloc);
     defer output.deinit();

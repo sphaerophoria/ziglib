@@ -19,7 +19,8 @@ pub fn huffmanCompress(alloc: std.mem.Allocator, input_data: []const u8, table: 
 
 fn huffmanDecompress(alloc: std.mem.Allocator, data: []const u8, table: *const huffman.HuffmanTable(u8), output_len: usize) !std.ArrayList(u8) {
     var buf_reader = std.io.fixedBufferStream(data);
-    var reader = huffman.huffmanReader(buf_reader.reader(), table, output_len);
+    var bit_reader = std.io.bitReader(.Little, buf_reader.reader());
+    var reader = huffman.huffmanReader(bit_reader, table, output_len);
 
     var ret = std.ArrayList(u8).init(alloc);
     errdefer ret.deinit();
