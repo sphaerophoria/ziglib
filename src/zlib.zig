@@ -131,9 +131,9 @@ pub fn generateZlibNoCompression(writer: anytype, data: []const u8) !usize {
     return counting_writer.bytes_written;
 }
 
-fn getFixedHuffmanTable(alloc: Allocator) !huffman.HuffmanTable(u16) {
+pub fn getFixedHuffmanBitLengths(alloc: Allocator) !std.ArrayList(u64) {
     var bit_lengths = std.ArrayList(u64).init(alloc);
-    defer bit_lengths.deinit();
+    errdefer bit_lengths.deinit();
 
     try bit_lengths.resize(288);
     @memset(bit_lengths.items[0..144], 8);
@@ -141,13 +141,14 @@ fn getFixedHuffmanTable(alloc: Allocator) !huffman.HuffmanTable(u16) {
     @memset(bit_lengths.items[256..280], 7);
     @memset(bit_lengths.items[280..288], 8);
 
-    return try huffman.HuffmanTable(u16).initFromBitLengths(alloc, bit_lengths.items);
+    return bit_lengths;
 }
 
 pub fn generateZlibStaticHuffman(alloc: Allocator, writer: anytype, data: []const u8) !usize {
-    var huffman_table = try getFixedHuffmanTable(alloc);
-    defer huffman_table.deinit();
-    var codebook = try huffman_table.generateCodebook(alloc);
+    var bit_lengths = try getFixedHuffmanBitLengths(alloc);
+    defer bit_lengths.deinit();
+
+    var codebook = try huffman.generateCodebook(alloc, bit_lengths.items);
     defer codebook.deinit();
 
     var counting_writer = std.io.countingWriter(writer);
@@ -195,9 +196,13 @@ pub fn ZlibDecompressor(comptime Reader: type) type {
                 return error.Unsupported;
             }
 
+            var bit_lengths = try getFixedHuffmanBitLengths(alloc);
+            defer bit_lengths.deinit();
+
+            var table = try huffman.HuffmanTable(u16).initFromBitLengths(alloc, bit_lengths.items);
             return .{
                 .reader = std.io.bitReader(.Little, reader),
-                .fixedHuffmanTable = try getFixedHuffmanTable(alloc),
+                .fixedHuffmanTable = table,
             };
         }
 

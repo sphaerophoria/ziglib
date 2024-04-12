@@ -3,8 +3,8 @@ const Allocator = std.mem.Allocator;
 const huffman = @import("huffman.zig");
 const z = @import("zlib.zig");
 
-pub fn huffmanCompress(alloc: std.mem.Allocator, input_data: []const u8, table: *const huffman.HuffmanTable(u8)) !std.ArrayList(u8) {
-    var codebook = try table.generateCodebook(alloc);
+pub fn huffmanCompress(alloc: std.mem.Allocator, input_data: []const u8, bit_lengths: []const u64) !std.ArrayList(u8) {
+    var codebook = try huffman.generateCodebook(alloc, bit_lengths);
     defer codebook.deinit();
 
     var buf = std.ArrayList(u8).init(alloc);
@@ -130,10 +130,13 @@ fn demoRealZlibCompression(args: *const Args) !void {
 }
 
 fn demoHuffmanCompression(alloc: Allocator, args: *const Args) !void {
-    var table = try huffman.HuffmanTable(u8).init(alloc, &huffman.countCharFrequencies(args.input_data));
+    var bit_lengths = try huffman.freqsToBitDepths(alloc, &huffman.countCharFrequencies(args.input_data));
+    defer bit_lengths.deinit();
+
+    var table = try huffman.HuffmanTable(u8).initFromBitLengths(alloc, bit_lengths.items);
     defer table.deinit();
 
-    var compressed = try huffmanCompress(alloc, args.input_data, &table);
+    var compressed = try huffmanCompress(alloc, args.input_data, bit_lengths.items);
     defer compressed.deinit();
     std.debug.print("compressed: {}\n", .{HexSliceFormatter.init(compressed.items)});
 
