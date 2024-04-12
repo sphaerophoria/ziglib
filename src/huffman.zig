@@ -517,3 +517,51 @@ test "huffman code iter" {
 
     try std.testing.expectEqualSlices(bool, &[4]bool{ true, true, false, true }, path.items);
 }
+
+test "init from bit lengths" {
+    var alloc = std.testing.allocator;
+    var bit_lengths = std.ArrayList(u64).init(alloc);
+    defer bit_lengths.deinit();
+
+    // From the zlib rfc, table used for static huffman blocks
+    try bit_lengths.resize(288);
+    @memset(bit_lengths.items[0..144], 8);
+    @memset(bit_lengths.items[144..256], 9);
+    @memset(bit_lengths.items[256..280], 7);
+    @memset(bit_lengths.items[280..288], 8);
+
+    var table = try HuffmanTable(u16).initFromBitLengths(alloc, bit_lengths.items);
+    defer table.deinit();
+
+    var codebook = try table.generateCodebook(alloc);
+    defer codebook.deinit();
+
+    var expected: usize = 0;
+    var num_bits: usize = 7;
+
+    const Range = struct { begin: usize, end: usize, num_bits: usize };
+
+    const ranges = &[_]Range{
+        .{ .begin = 256, .end = 280, .num_bits = 7 },
+        .{ .begin = 0, .end = 144, .num_bits = 8 },
+        .{ .begin = 280, .end = 288, .num_bits = 8 },
+        .{ .begin = 144, .end = 256, .num_bits = 9 },
+    };
+
+    // A little complex of a test, but I think it's worth it
+    for (ranges) |range| {
+        if (range.num_bits > num_bits) {
+            num_bits += 1;
+            expected <<= 1;
+        }
+        for (codebook.items[range.begin..range.end]) |item_opt| {
+            // The values in the RFC are read in the order of MSB to LSB. Values from
+            // 256..280 should be in the range [0, 280]. Our values are serialized in
+            // the order of LSB to MSB, so we have to reverse them
+            var item = item_opt.?;
+            var reversed = @bitReverse(item.val) >> @intCast(@bitSizeOf(@TypeOf(item.val)) - item.num_bits);
+            try std.testing.expectEqual(reversed, expected);
+            expected += 1;
+        }
+    }
+}
