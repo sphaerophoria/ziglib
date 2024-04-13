@@ -96,6 +96,127 @@ const Header = packed struct {
     }
 };
 
+// FIXME: This is valid for the length table as well
+const DistanceTableItem = struct {
+    extra_bits: u64,
+    range_start: u64,
+};
+
+fn generateDistanceTable() [30]DistanceTableItem {
+    comptime {
+        var ret: [30]DistanceTableItem = undefined;
+        // 4 elements with 0 extra bits, then pairs of 2
+        var dist = 1;
+
+        var i = 0;
+        while (i < 4) {
+            ret[i] = .{
+                .extra_bits = 0,
+                .range_start = dist,
+            };
+            dist += 1;
+            i += 1;
+        }
+
+        while (i < 30) {
+            for (0..2) |_| {
+                const extra_bits = (i - 2) / 2;
+                ret[i] = .{
+                    .extra_bits = extra_bits,
+                    .range_start = dist,
+                };
+
+                dist += 1 << extra_bits;
+                i += 1;
+            }
+        }
+        return ret;
+    }
+}
+const distance_table = generateDistanceTable();
+
+fn distanceCode(distance: u16) !huffman.Code {
+    for (distance_table, 0..) |distance_item, start_code| {
+        if (distance < (distance_item.range_start + (@as(u64, 1) << @intCast(distance_item.extra_bits)))) {
+            const extra_val = distance - distance_item.range_start;
+            var val = huffman.bitReverse(start_code, 5);
+            if (distance_item.extra_bits != 0) {
+                val |= extra_val << 5;
+            }
+
+            return .{
+                .val = val,
+                .num_bits = 5 + distance_item.extra_bits,
+            };
+        }
+    }
+
+    return error.InvalidDistanceCode;
+}
+
+fn generateLengthTable() [29]DistanceTableItem {
+    comptime {
+        var ret: [29]DistanceTableItem = undefined;
+        // 8 elements with 0 extra bits, then chunks of 4
+        var dist = 3;
+
+        var i = 0;
+        while (i < 8) {
+            ret[i] = .{
+                .extra_bits = 0,
+                .range_start = dist,
+            };
+            dist += 1;
+            i += 1;
+        }
+
+        while (i < 29) {
+            for (0..4) |_| {
+                const extra_bits = (i - 4) / 4;
+                ret[i] = .{
+                    .extra_bits = extra_bits,
+                    .range_start = dist,
+                };
+
+                dist += 1 << extra_bits;
+                i += 1;
+                if (i >= 29) {
+                    break;
+                }
+            }
+        }
+        return ret;
+    }
+}
+const length_table = generateLengthTable();
+
+const LengthCode = struct {
+    huffman_coded: u16,
+    extra_val: huffman.Code,
+};
+
+fn lengthCode(length: u16) !LengthCode {
+    for (length_table, 0..) |length_item, code_offset| {
+        if (length < (length_item.range_start + (@as(u8, 1) << @intCast(length_item.extra_bits)))) {
+            const offset = length - length_item.range_start;
+
+            //var val: u64 = 0;
+            //if (length_item.extra_bits > 0) {
+            //    val = huffman.bitReverse(offset, length_item.extra_bits);
+            //}
+            return .{
+                .huffman_coded = @intCast(257 + code_offset),
+                .extra_val = .{
+                    .val = offset,
+                    .num_bits = length_item.extra_bits,
+                },
+            };
+        }
+    }
+
+    return error.InvalidLength;
+}
+
 fn readZlibHeader(reader: anytype) !Header {
     var header: Header = undefined;
     _ = try reader.readAll(std.mem.asBytes(&header));
@@ -144,7 +265,7 @@ pub fn getFixedHuffmanBitLengths(alloc: Allocator) !std.ArrayList(u64) {
     return bit_lengths;
 }
 
-pub fn generateZlibStaticHuffman(alloc: Allocator, writer: anytype, data: []const u8) !usize {
+pub fn generateZlibStaticHuffman(alloc: Allocator, writer: anytype, data: []const u8, lz77_length: u16, lz77_distance: u16) !usize {
     var bit_lengths = try getFixedHuffmanBitLengths(alloc);
     defer bit_lengths.deinit();
 
@@ -170,16 +291,42 @@ pub fn generateZlibStaticHuffman(alloc: Allocator, writer: anytype, data: []cons
     var huffman_writer = huffman.huffmanWriter(counting_writer.writer(), codebook.items);
     try huffman_writer.writer.writeBits(@as(u8, 0b011), 3);
     try huffman_writer.write(u8, data);
+
+    if (lz77_length > 0) {
+        const length_code = try lengthCode(lz77_length);
+        std.debug.print("length code: {any}\n", .{length_code});
+        try huffman_writer.write(u16, &[_]u16{length_code.huffman_coded});
+        try huffman_writer.writer.writeBits(length_code.extra_val.val, length_code.extra_val.num_bits);
+
+        var distance_code = try distanceCode(lz77_distance);
+        std.debug.print("distance code: {any}\n", .{distance_code});
+        try huffman_writer.writer.writeBits(distance_code.val, distance_code.num_bits);
+    }
+
     try huffman_writer.write(u16, &[_]u16{256});
     try huffman_writer.finish();
 
     return counting_writer.bytes_written;
 }
 
+fn ensureCapacity(ring_buffer: *std.RingBuffer, capacity: usize) void {
+    // It's invalid to try to write too much
+    std.debug.assert(capacity <= ring_buffer.data.len);
+
+    const current_capacity = ring_buffer.data.len - ring_buffer.len();
+    if (current_capacity >= capacity) {
+        return;
+    }
+
+    ring_buffer.read_index = ring_buffer.mask2(ring_buffer.read_index + (capacity - current_capacity));
+}
+
 pub fn ZlibDecompressor(comptime Reader: type) type {
     return struct {
         reader: BitReader(.Little, Reader),
         fixedHuffmanTable: huffman.HuffmanTable(u16),
+        previous_data: std.RingBuffer,
+        alloc: Allocator,
 
         const Self = @This();
 
@@ -203,11 +350,14 @@ pub fn ZlibDecompressor(comptime Reader: type) type {
             return .{
                 .reader = std.io.bitReader(.Little, reader),
                 .fixedHuffmanTable = table,
+                .previous_data = try std.RingBuffer.init(alloc, 32768),
+                .alloc = alloc,
             };
         }
 
         pub fn deinit(self: *Self) void {
             self.fixedHuffmanTable.deinit();
+            self.previous_data.deinit(self.alloc);
         }
 
         pub fn readBlock(self: *Self, output: []u8) !usize {
@@ -246,6 +396,8 @@ pub fn ZlibDecompressor(comptime Reader: type) type {
                     }
 
                     _ = try self.reader.reader().readAll(output[0..len]);
+                    ensureCapacity(&self.previous_data, len);
+                    self.previous_data.writeSliceAssumeCapacity(output[0..len]);
                     return len;
                 },
                 0b01 => {
@@ -254,9 +406,69 @@ pub fn ZlibDecompressor(comptime Reader: type) type {
                     while (try reader.next()) |val| {
                         if (val < 256) {
                             output[output_idx] = @intCast(val);
+                            ensureCapacity(&self.previous_data, 1);
+                            self.previous_data.writeAssumeCapacity(@intCast(val));
                             output_idx += 1;
                         } else if (val == 256) {
                             break;
+                        } else {
+                            const length_table_idx = val - 257;
+                            if (length_table_idx >= length_table.len) {
+                                std.log.err("Length code was too big", .{});
+                                return error.InvalidData;
+                            }
+                            const length_code = length_table[length_table_idx];
+
+                            var bits_consumed: usize = 0;
+                            var extra_val = try self.reader.readBits(u16, length_code.extra_bits, &bits_consumed);
+
+                            if (bits_consumed != length_code.extra_bits) {
+                                std.log.err("Length code was not complete", .{});
+                                return error.InvalidData;
+                            }
+
+                            var length = length_code.range_start + extra_val;
+
+                            var distance_idx = try self.reader.readBits(u16, 5, &bits_consumed);
+                            if (bits_consumed != 5) {
+                                std.log.err("Distance code was not complete", .{});
+                                return error.InvalidData;
+                            }
+                            distance_idx = huffman.bitReverse(distance_idx, 5);
+
+                            if (distance_idx >= distance_table.len) {
+                                std.log.err("Distance code was too big", .{});
+                                return error.InvalidData;
+                            }
+
+                            var distance_code = distance_table[distance_idx];
+                            extra_val = try self.reader.readBits(u16, length_code.extra_bits, &bits_consumed);
+
+                            if (bits_consumed != length_code.extra_bits) {
+                                std.log.err("Distance code was not complete", .{});
+                                return error.InvalidData;
+                            }
+
+                            var distance = distance_code.range_start + extra_val;
+
+                            std.debug.print("Found length: {} and distance: {}\n", .{ length, distance });
+                            var copy_data = self.previous_data.sliceAt(self.previous_data.write_index - distance, @min(distance, length));
+
+                            // slice[idx..][0..len]
+                            var remaining_length = length;
+                            while (remaining_length > 0) {
+                                var copy_len = @min(remaining_length, copy_data.first.len);
+                                @memcpy(output[output_idx .. output_idx + copy_len], copy_data.first[0..copy_len]);
+                                remaining_length -= copy_len;
+                                output_idx += copy_len;
+
+                                copy_len = @min(remaining_length, copy_data.second.len);
+                                @memcpy(output[output_idx .. output_idx + copy_len], copy_data.second[0..copy_len]);
+                                remaining_length -= copy_len;
+                                output_idx += copy_len;
+                                // FIXME adjust previous view
+                            }
+                            std.debug.print("data to copy: {s}{s}\n", .{ copy_data.first, copy_data.second });
                         }
                     }
                     return output_idx;
@@ -329,13 +541,14 @@ test "static huffman block generation" {
     defer buf.deinit();
 
     const input = "hello world";
-    const num_written = try generateZlibStaticHuffman(alloc, buf.writer(), input);
+    const num_written = try generateZlibStaticHuffman(alloc, buf.writer(), input, 3, 2);
     try std.testing.expectEqual(num_written, buf.items.len);
 
-    var decompressed: [input.len]u8 = undefined;
+    var decompressed: [input.len + 10:0]u8 = undefined;
+    @memset(&decompressed, 0);
     // For the time being, we error out because we do not generate the adler32 segment
     _ = decompressWithZlib(buf.items, &decompressed) catch {};
-    try std.testing.expectEqualStrings(input, &decompressed);
+    try std.testing.expectEqualStrings(input ++ "ldl", decompressed[0..std.mem.indexOfScalar(u8, &decompressed, 0).?]);
 }
 
 test "static huffman block decompression" {
@@ -344,7 +557,7 @@ test "static huffman block decompression" {
     defer buf.deinit();
 
     const input = "hello world";
-    const num_written = try generateZlibStaticHuffman(alloc, buf.writer(), input);
+    const num_written = try generateZlibStaticHuffman(alloc, buf.writer(), input, 0, 0);
     try std.testing.expectEqual(num_written, buf.items.len);
 
     var decompressed: [input.len]u8 = undefined;
@@ -355,4 +568,41 @@ test "static huffman block decompression" {
     var decompressed_len = try decompressor.readBlock(&decompressed);
 
     try std.testing.expectEqualStrings(input, decompressed[0..decompressed_len]);
+}
+
+test "distance code generation" {
+    var code = try distanceCode(4);
+
+    // Distance code 3, but bitreversed initial 5 bit value
+    // 0b00011 -> 0b11000
+    try std.testing.expectEqual(@as(u64, 0b11000), code.val);
+
+    code = try distanceCode(760);
+
+    // Bitreversed initial 5 bits
+    // >>> f"{18:b}"
+    // '10010'
+    // >>> 0b01001
+    // 9
+    // The next N bits seem to be _not_ reversed
+    // >>> 760 - 513
+    // 247
+    // >>> 247 << 5
+    // 7904
+    // Combine the two
+    // >>> 7904 | 9
+    // 7913
+    try std.testing.expectEqual(@as(u64, 7913), code.val);
+}
+
+test "length code generation" {
+    var code = try lengthCode(4);
+    try std.testing.expectEqual(@as(u64, 258), code.huffman_coded);
+    try std.testing.expectEqual(@as(u64, 0), code.extra_val.num_bits);
+
+    code = try lengthCode(140);
+    try std.testing.expectEqual(@as(u64, 281), code.huffman_coded);
+    // 140 - 131 from length table in rfc
+    try std.testing.expectEqual(@as(u64, 9), code.extra_val.val);
+    try std.testing.expectEqual(@as(u64, 5), code.extra_val.num_bits);
 }

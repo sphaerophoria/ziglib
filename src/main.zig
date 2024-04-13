@@ -76,41 +76,96 @@ const HexSliceFormatter = struct {
     }
 };
 
+const ArgParseHelper = struct {
+    process_name: []const u8,
+    stderr: std.fs.File.Writer,
+    args: std.process.ArgIterator,
+
+    const Self = @This();
+
+    fn init() ArgParseHelper {
+        var stderr = std.io.getStdErr().writer();
+        var args = std.process.args();
+        const process_name = args.next() orelse "ziglib";
+        return .{
+            .process_name = process_name,
+            .args = std.process.args(),
+            .stderr = stderr,
+        };
+    }
+
+    fn next(self: *Self) ?[]const u8 {
+        return self.args.next();
+    }
+
+    fn nextStr(self: *Self, val_name: []const u8) []const u8 {
+        return self.args.next() orelse {
+            self.stderr.print("{s} value not provided\n", .{val_name}) catch {};
+            Args.help(self.process_name);
+        };
+    }
+
+    fn nextInt(self: *Self, comptime T: type, val_name: []const u8) T {
+        var val = self.nextStr(val_name);
+
+        return std.fmt.parseInt(u16, val, 10) catch |e| {
+            self.stderr.print("Failed to parse {s}: {any}\n", .{ val_name, e }) catch {};
+            Args.help(self.process_name);
+        };
+    }
+};
+
 const Args = struct {
     input_data: []const u8,
+    lz77_length: u16,
+    lz77_distance: u16,
 
     fn parse() !Args {
-        var args = std.process.args();
-        var stderr = std.io.getStdErr().writer();
+        var args = ArgParseHelper.init();
 
         const process_name = args.next() orelse "ziglib";
         var input_data_opt: ?[]const u8 = null;
+        var lz77_length: u16 = 0;
+        var lz77_distance: u16 = 1;
 
         while (args.next()) |arg| {
             if (std.mem.eql(u8, "--input-data", arg)) {
-                input_data_opt = args.next();
+                input_data_opt = args.nextStr("--input-data");
+            } else if (std.mem.eql(u8, "--lz77-length", arg)) {
+                lz77_length = args.nextInt(u16, "--lz77-length");
+            } else if (std.mem.eql(u8, "--lz77-distance", arg)) {
+                lz77_distance = args.nextInt(u16, "--lz77-distance");
             } else if (std.mem.eql(u8, "--help", arg)) {
                 help(process_name);
             } else {
-                _ = stderr.print("Unexpected argument: {s}\n", .{arg}) catch {};
+                _ = args.stderr.print("Unexpected argument: {s}\n", .{arg}) catch {};
                 help(process_name);
             }
         }
 
         var input_data = input_data_opt orelse {
-            _ = try stderr.write("Input data not provded\n");
+            _ = try args.stderr.write("Input data not provded\n");
             help(process_name);
         };
 
         return Args{
             .input_data = input_data,
+            .lz77_length = lz77_length,
+            .lz77_distance = lz77_distance,
         };
     }
 
     fn help(process_name: []const u8) noreturn {
         var stderr = std.io.getStdErr().writer();
         _ = stderr.print(
-            \\Usage: {s} --input-data [data]
+            \\Usage: {s} [ARGS]
+            \\
+            \\Required Args:
+            \\--input-data [data]: Data to compress
+            \\
+            \\Optional Args:
+            \\--lz77-length [val]: When testing a compressed block, do we want to append a length/distance pair?
+            \\--lz77-distance [val]: When testing a compressed block, do we want to append a length/distance pair?
             \\
             \\A program to replace zlib, written in zig
             \\
@@ -164,24 +219,28 @@ fn demoCustomDecompressorNoCompression(alloc: Allocator, input: []const u8) !voi
     std.debug.print("No compression block contained: {s}\n", .{output[0..read_bytes]});
 }
 
-fn demoCustomDecompressorFixedCompression(alloc: Allocator, input: []const u8) !void {
+fn demoCustomDecompressorFixedCompression(alloc: Allocator, input: []const u8, lz77_length: u16, lz77_distance: u16) !void {
     var buf: [4096]u8 = undefined;
     var buf_stream = std.io.fixedBufferStream(&buf);
-    var bytes_written = try z.generateZlibStaticHuffman(alloc, buf_stream.writer(), input);
+    var bytes_written = try z.generateZlibStaticHuffman(alloc, buf_stream.writer(), input, lz77_length, lz77_distance);
     std.debug.print("custom generated static huffman: {}\n", .{HexSliceFormatter{ .buf = buf[0..bytes_written] }});
 
-    var output: [4096]u8 = undefined;
+    var output = [1]u8{0} ** 4096;
+    _ = z.decompressWithZlib(buf[0..bytes_written], &output) catch {};
+
+    std.debug.print("real decompressor found: {s}\n", .{output});
+
     buf_stream.reset();
     var decompressor = try z.zlibDecompressor(alloc, buf_stream.reader());
     defer decompressor.deinit();
 
     var read_bytes = try decompressor.readBlock(&output);
-    std.debug.print("static huffman block contained: {s}\n", .{output[0..read_bytes]});
+    std.debug.print("custom decompressor found: {s}\n", .{output[0..read_bytes]});
 }
 
-fn demoCustomDecompressor(alloc: Allocator, input: []const u8) !void {
+fn demoCustomDecompressor(alloc: Allocator, input: []const u8, lz77_length: u16, lz77_distance: u16) !void {
     try demoCustomDecompressorNoCompression(alloc, input);
-    try demoCustomDecompressorFixedCompression(alloc, input);
+    try demoCustomDecompressorFixedCompression(alloc, input, lz77_length, lz77_distance);
 }
 
 pub fn main() !void {
@@ -197,13 +256,15 @@ pub fn main() !void {
 
     var args = try Args.parse();
     std.debug.print("Input data: {s}\n", .{args.input_data});
+    std.debug.print("Lz77 length: {d}\n", .{args.lz77_length});
+    std.debug.print("Lz77 distance: {d}\n", .{args.lz77_distance});
 
     std.debug.print("\n#### Huffman ####\n", .{});
     try demoHuffmanCompression(alloc, &args);
     std.debug.print("\n#### Zlib ####\n", .{});
     try demoRealZlibCompression(&args);
     std.debug.print("\n#### Custom zlib decompressor ####\n", .{});
-    try demoCustomDecompressor(alloc, args.input_data);
+    try demoCustomDecompressor(alloc, args.input_data, args.lz77_length, args.lz77_distance);
 }
 
 test {

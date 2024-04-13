@@ -2,13 +2,17 @@ const z = @import("zlib.zig");
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const Code = struct {
+pub fn bitReverse(val: anytype, num_bits: usize) @TypeOf(val) {
+    return @bitReverse(val) >> @intCast(@bitSizeOf(@TypeOf(val)) - num_bits);
+}
+
+pub const Code = struct {
     val: u64,
     num_bits: u64,
 
     fn reversed(self: *const Code) Code {
         return .{
-            .val = @bitReverse(self.val) >> @intCast(@bitSizeOf(@TypeOf(self.val)) - self.num_bits),
+            .val = bitReverse(self.val, self.num_bits),
             .num_bits = self.num_bits,
         };
     }
